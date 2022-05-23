@@ -1,0 +1,144 @@
+%% ftEcgFilter.m
+
+%
+
+%%
+
+ecgLowCut           = 0.5;
+ecgHighCut          = 2;
+powerLineFreq       = 60;
+ecgBpFilterOrder    = 5;
+ecgFs               = opticsFs / 10;
+
+
+[ecgAbp, ecgBbp, ecgCbp, ecgDbp] = butter(ecgBpFilterOrder, ...
+    [ecgLowCut ecgHighCut] / (ecgFs) );
+
+[sosBpEcg,gBpEcg] = ss2sos(ecgAbp,ecgBbp,ecgCbp,ecgDbp);
+
+if (mod(ecgBpFilterOrder,2) == 0)
+    ecgDesignFiltOrder = ecgBpFilterOrder;
+else
+    ecgDesignFiltOrder = ecgBpFilterOrder + 1;
+end
+
+ecgBandPassFilter = designfilt('bandpassiir', ...
+    'FilterOrder', ecgDesignFiltOrder, ...
+    'HalfPowerFrequency1', ecgLowCut, ...
+    'HalfPowerFrequency2', ecgHighCut, ...
+	'SampleRate', ecgFs);
+
+makePlots = true;
+
+if (makePlots)
+    fvtO = fvtool(sosBpEcg, ecgBandPassFilter, 'Fs', ecgFs);
+    legend(fvtO,'butter','designfilt');
+end
+
+ECG = struct;
+ECG.BANDPASS_FILTER.filterOrder = ecgBpFilterOrder;
+ECG.BANDPASS_FILTER.lowCut = ecgLowCut;
+ECG.BANDPASS_FILTER.highCut = ecgHighCut;
+ECG.BANDPASS_FILTER.sampleRate = ecgFs;
+ECG.BANDPASS_FILTER.A = ecgAbp;
+ECG.BANDPASS_FILTER.B = ecgBbp;
+ECG.BANDPASS_FILTER.C = ecgCbp;
+ECG.BANDPASS_FILTER.D = ecgDbp;
+ECG.BANDPASS_FILTER.SOS = sosBpEcg;
+ECG.BANDPASS_FILTER.G = gBpEcg;
+
+fprintf('Band-pass butterworth filter for ECG signal:\n');
+fprintf('\tFilter order: %d\n', ecgBpFilterOrder);
+fprintf('\tLow cut frequency: %2.2f Hz\n', ecgLowCut);
+fprintf('\tHigh cut frequency: %2.2f Hz\n', ecgHighCut);
+fprintf('\tECG BPF sample rate (2Hz = normalized frequencies): %d Hz\n', ...
+    ecgFs);
+
+filtEcg = filtfilt( sosBpEcg, gBpEcg, optics.led4);
+
+
+%% Low-pass experiment for sections of ECG without RLD attached
+
+%% Next up, a high-pass filter for DC offset removal
+
+dcoFiltOrder        = 3;                % FieldTrip suggested default
+dcoPassbandFreqHz   = 0.01;             % DC-removal (cut below 0.01 Hz)
+ecgNyquistFs        = ecgFs / 2;
+
+fprintf('DC-removal (high-pass) filter characteristics:\n');
+fprintf('\tFilter order: %d\n', dcoFiltOrder);
+fprintf('\tPassband frequency: %d Hz\n', dcoPassbandFreqHz);
+fprintf('\tNyquist frequency (ECG): %d\n', ecgNyquistFs);
+
+
+% filter coefficients for optics high-pass (DC-removal)
+[AecgDCHP, BecgDCHP, CecgDCHP, DecgDCHP] = ...
+    butter(dcoFiltOrder, ( dcoPassbandFreqHz / (ecgNyquistFs) ), 'high');
+
+[ecgSOS, ecgG] = ss2sos(AecgDCHP, BecgDCHP, CecgDCHP, DecgDCHP);
+
+
+% design the high-pass filter. NOTE: using samplingRate = 2, which is the
+% designfilt default, results in normalized frequencies
+
+dcoEcgFilter = designfilt('highpassiir','FilterOrder',dcoFiltOrder, ...
+    'PassbandFrequency', dcoPassbandFreqHz, ... 
+    'PassbandRipple', 0.2, ...
+    'SampleRate', 2);
+
+if (makePlots)
+    
+    fvt = fvtool(ecgSOS, dcoEcgFilter, 'Fs', ecgFs);
+    legend(fvt,'butter','designfilt');
+    
+    
+end
+
+dcoEcg = filtfilt(dcoEcgFilter', optics.led4);
+
+%% Use low-pass filter to screen out 50/60 Hz noise
+
+lpFiltOrder       = 6;        
+oPassbandFreqHz = oFs / 25;
+kPassbandFreqHz = kFs / 4;
+
+fprintf('Low-pass filter for removal of high frequency noise signals.\n');
+fprintf('\tFilter order: %d\n', lpFiltOrder);
+fprintf('\tOptics passband frequency: %d Hz\n', oPassbandFreqHz);
+fprintf('\tKinematics passband frequency: %d Hz\n', kPassbandFreqHz);
+
+% filter coefficients for high-pass
+
+[Aolp, Bolp, Colp, Dolp] = butter(lpFiltOrder, ( oPassbandFreqHz / (oNyquistFs) ) );
+
+% design the high-pass filter for optics
+lowPassOpticalFilter = designfilt('lowpassiir','FilterOrder', lpFiltOrder, ...
+    'PassbandFrequency', oPassbandFreqHz, ... 
+    'PassbandRipple', 0.2, ...
+    'SampleRate', oNyquistFs);
+
+
+lpLed4 = filtfilt(lowPassOpticalFilter', dcoL);
+
+%% Use this filter to make raw and filtered ECG signal plots
+
+f1 = figure('Color', white);
+
+s1 = subplot(311);
+plot(optics.Time, optics.led4, 'Color', goldenrod, 'LineWidth', 1.5);
+xlabel('Time');
+ylabel('Raw ECG');
+grid;
+s2 = subplot(312);
+plot(optics.Time, filtEcg, 'Color', red, 'LineWidth', 1.5);
+xlabel('Time');
+ylabel('Filtered ECG');
+title('Band-pass filter');
+grid;
+s3 = subplot(313);
+plot(optics.Time, dcoEcg, 'Color', red, 'LineWidth', 1.5);
+xlabel('Time');
+ylabel('Filtered ECG');
+title('DCO filter');
+grid;
+linkaxes([s1 s2 s3],'x');
